@@ -1,10 +1,12 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging.Console;
+using WithCancellation.Middleware;
+using WithCancellation.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
+#region register services
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -19,12 +21,13 @@ builder.Services.AddLogging(loggingBuilder =>
     });
 });
 
-builder.Services.TryAddScoped<IHandler, Handler>();
+builder.Services.TryAddScoped<ISlowOperationModeler, SlowOperationModeler>();
 //builder.Services.TryAddSingleton<CancellationMiddleware>();
+#endregion register services
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
+#region configure http pipeline
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -39,59 +42,10 @@ app.UseHttpsRedirection();
 
 app.UseMiddleware<CancellationMiddleware>();
 app
-    .MapGet("/slowtest", async ([FromServices] IHandler handler, CancellationToken stopper) 
+    .MapGet("/slowtest", 
+        async ([FromServices] ISlowOperationModeler handler, CancellationToken stopper) 
             => await handler.Handle(stopper))
 .WithName("SlowTest");//helps swagger to see this endpoint
+#endregion configure http pipeline
 
 app.Run();
-
-interface IHandler
-{
-    Task<string> Handle(CancellationToken stopper);
-}
-
-internal class Handler : IHandler
-{
-    private readonly ILogger<Handler> _logger;
-
-    public Handler(ILogger<Handler> logger) => _logger = logger;
-
-    public async Task<string> Handle(CancellationToken stopper)
-    {
-        var id = Guid.NewGuid();
-        _logger.LogInformation($"Starting to do slow work #{id}");
-        
-        await Task.Delay(10_000, stopper);
-        
-        var message = $"Finished slow operation #{id}";
-        _logger.LogInformation(message);
-        return message;
-    }
-}
-
-public class CancellationMiddleware
-{
-    private readonly ILogger<CancellationMiddleware> _logger;
-    private readonly RequestDelegate _next;
-
-    //if we want to have ctor; we need to provide next delegate here;
-    //app.UseMiddleware registers the class, so that we do not need to do it explicitly
-    public CancellationMiddleware(ILogger<CancellationMiddleware> logger, RequestDelegate next)
-    {
-        _logger = logger;
-        _next = next;
-    }
-
-    public async Task InvokeAsync(HttpContext context)
-    {
-        try
-        {
-            await _next.Invoke(context);
-        }
-        catch (OperationCanceledException)//task cancelled exception derives from this one
-        {
-            _logger.LogWarning("A task has been cancelled");
-            context.Response.StatusCode = 409;//aka client closed request
-        }
-    }
-}
